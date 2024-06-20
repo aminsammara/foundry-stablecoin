@@ -8,6 +8,7 @@ import {DSCEngine} from "../../src/DSCEngine.sol";
 import {DecentralizedStableCoin} from "../../src/DecentralizedStableCoin.sol";
 import {HelperConfig} from "../../script/HelperConfig.s.sol";
 import {ERC20Mock} from "@openzeppelin/contracts/mocks/token/ERC20Mock.sol";
+import {MockV3Aggregator} from "../../test/mocks/MockV3Aggregator.sol";
 
 contract DSCEngineTest is Test {
     DeployDSC public deployer;
@@ -118,10 +119,10 @@ contract DSCEngineTest is Test {
 
     function testMintDscIsProperlyRecorded() public depositedCollateral {
         vm.startPrank(USER);
-        engine.mintDsc(AMOUNT_COLLATERAL);
+        engine.mintDsc(100);
         vm.stopPrank();
 
-        uint256 expectedDscBalance = AMOUNT_COLLATERAL;
+        uint256 expectedDscBalance = 100;
         uint256 dscBalance = engine.getDscMintedInformation(USER);
 
         assertEq(expectedDscBalance, dscBalance);
@@ -129,8 +130,8 @@ contract DSCEngineTest is Test {
 
     function testMintingTooMuchDscFailsAndReturnsCorrectHealthFactor() public depositedCollateral {
         (, uint256 collateralValueInUsd) = engine.getAccountInformation(USER);
-        uint256 amountDscToMint = AMOUNT_COLLATERAL * 1300;
-        uint256 healthFactor = ((((collateralValueInUsd * 50) / 100) * PRECISION) / amountDscToMint);
+        uint256 amountDscToMint = AMOUNT_COLLATERAL;
+        uint256 healthFactor = ((((collateralValueInUsd * 50) / 100) * PRECISION) / (amountDscToMint * PRECISION));
 
         vm.startPrank(USER);
         vm.expectRevert(abi.encodeWithSelector(DSCEngine.DSCEngine__BreaksHealthFactor.selector, healthFactor));
@@ -150,5 +151,52 @@ contract DSCEngineTest is Test {
         uint256 expectedCollateralBalance = 0;
         (, uint256 collateralBalance) = engine.getAccountInformation(USER);
         assertEq(expectedCollateralBalance, collateralBalance);
+    }
+
+    /////////////////////
+    // Liquidate Tests
+    /////////////////////
+
+    function testNotPossibleToLiquidateAHealthyUser() public depositedCollateral {
+        address pirateUser = makeAddr("pirate");
+        ERC20Mock(weth).mint(pirateUser, STARTING_WETH_BALANCE);
+
+        // User mints only a little bit of DSC
+        vm.prank(USER);
+        engine.mintDsc(1000);
+
+        uint256 userHealthFactor = engine.getHealthFactor(USER);
+        assert(userHealthFactor > 1e18);
+        // USER has a healthfactor of 10e18 > 1e18
+        // therefore pirateUser should not be able to liquidate them
+        vm.expectRevert(DSCEngine.DSCEngine__HealthFactorOk.selector);
+        vm.prank(pirateUser);
+        engine.liquidate(weth, USER, 100);
+    }
+
+    function testPossibleToLiquidateUnderwaterUser() public depositedCollateral {
+        // user deposited 10 ether of weth worth $2k each => total collateral $20k
+        // user then mints 5000 DSC => healthFactor = 10k / 5k = 2 OK
+        vm.prank(USER);
+        engine.mintDsc(5000);
+        address pirateUser = makeAddr("pirate");
+        ERC20Mock(weth).mint(pirateUser, STARTING_WETH_BALANCE);
+        vm.startPrank(pirateUser);
+        ERC20Mock(weth).approve(address(engine), STARTING_WETH_BALANCE);
+        dsc.approve(address(engine), STARTING_WETH_BALANCE);
+        engine.depositCollateral(weth, AMOUNT_COLLATERAL);
+        engine.mintDsc(1000);
+        vm.stopPrank();
+
+        // at this point suppose price of ETH drops to $999 => healthFactor < 1 UNDERWATER
+        MockV3Aggregator(wethUsdPriceFeed).updateAnswer(999e8);
+        // at this point pirateUser can liquidate them
+
+        uint256 amountToLiquidate = 500;
+        vm.startPrank(pirateUser);
+        vm.expectEmit();
+        emit DSCEngine.Liquidated(pirateUser, USER, amountToLiquidate);
+        engine.liquidate(weth, USER, amountToLiquidate);
+        vm.stopPrank();
     }
 }

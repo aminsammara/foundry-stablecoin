@@ -91,7 +91,7 @@ contract DSCEngine is ReentrancyGuard {
     event CollateralRedeemed(
         address indexed redeemedFrom, address indexed redeemedTo, address indexed token, uint256 amount
     );
-    event SCEngine__TransferFailed();
+    event Liquidated(address indexed liquidator, address indexed liquidatedUser, uint256 indexed amountLiquidatd);
 
     /////////////////
     // Modifiers
@@ -238,11 +238,10 @@ contract DSCEngine is ReentrancyGuard {
         _burnDsc(debtToCover, user, msg.sender);
         uint256 endingHealthFactor = _healthFactor(user);
         if (endingHealthFactor <= startingUserHealthFactor) revert DSCEnging__HealthFactorNotImproved();
+        emit Liquidated(msg.sender, user, debtToCover);
         // revert if liquidator's health factor deteriorates below minimum health factor as a result of liquidating someone
         _revertIfHealthFactorIsBroken(msg.sender);
     }
-
-    function getHealthFactor() external view {}
 
     /////////////////
     // Private and Internal View Functions
@@ -289,7 +288,9 @@ contract DSCEngine is ReentrancyGuard {
 
         (uint256 totalDscMinted, uint256 collateralValueInUsd) = _getAccountInformation(user);
         uint256 collateralAdjustedForThreshold = (collateralValueInUsd * LIQUIDATION_THRESHOLD) / LIQUIDATION_PRECISION;
-        return (collateralAdjustedForThreshold * PRECISION) / totalDscMinted;
+        // 20000000000000000000000
+        // 10000000000000000000000 * 1e18 / 1000
+        return (collateralAdjustedForThreshold * PRECISION) / (totalDscMinted * PRECISION);
     }
 
     // 1. Check Health factor (do they have enough collateral)
@@ -303,6 +304,10 @@ contract DSCEngine is ReentrancyGuard {
     /////////////////
     // Public and External View Functions
     /////////////////
+
+    function getHealthFactor(address user) external view returns (uint256) {
+        return _healthFactor(user);
+    }
 
     function getTokenAmountFromUsd(address tokenCollateralAddress, uint256 usdAmountInWei)
         public
